@@ -21,7 +21,7 @@ from pdf_engine import PdfDocument, HIGHLIGHT_STYLES
 from text_selection import TextSelector
 
 APP_NAME = "PDF擦除与高亮"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 BG, INK, MUTED = "#eef1f5", "#263447", "#708092"
 
 
@@ -121,7 +121,7 @@ class Editor:
         for key in ("highlight", "confused", "useful"):
             style = HIGHLIGHT_STYLES[key]
             icon = Image.new("RGBA", (16, 16))
-            ImageDraw.Draw(icon).rounded_rectangle((1, 4, 15, 13), radius=3, fill=style["swatch"])
+            ImageDraw.Draw(icon).rectangle((1, 4, 15, 13), fill=style["swatch"])
             self.style_icons[key] = ImageTk.PhotoImage(icon)
             button = tk.Button(bar, text=" " + style["label"], image=self.style_icons[key], compound="left",
                                command=lambda s=key: self.apply_selection(s), bg="white", activebackground=style["hover"],
@@ -195,7 +195,10 @@ class Editor:
             self.fit = True
             self.render()
             if self.selector is not None and self.selector.has_text:
-                self.status.set("划选文字后选择标记；Ctrl+S 保存到原文件。")
+                if self.pdf.needs_highlight_upgrade:
+                    self.status.set("旧版高亮已显示为平直边缘；Ctrl+S 保存此样式到原文件。")
+                else:
+                    self.status.set("划选文字后选择标记；Ctrl+S 保存到原文件。")
         except Exception as exc:
             if new_pdf and new_pdf is not self.pdf:
                 new_pdf.close()
@@ -422,7 +425,7 @@ class Editor:
         if not self.pdf or self.busy:
             return
         self._clear_selection()
-        if self._token() == self.saved_token:
+        if self._token() == self.saved_token and not self.pdf.needs_highlight_upgrade:
             self.status.set("所有修改均已保存。")
             return
         self._start_save(self.pdf.path, in_place=True)
@@ -557,13 +560,35 @@ def run_self_test(report_path):
                                    "rect": list(region), "quads": pdf.text_quads(0, region)})
                 pdf.save_in_place(styled)
                 with fitz.open(source) as reopened:
-                    check["in_place_save"] = "secret" not in reopened[0].get_text() and hashlib.sha256(source.read_bytes()).hexdigest() != original_hash
-                    annotations = list(reopened[0].annots() or [])
+                    page = reopened[0]
+                    check["in_place_save"] = "secret" not in page.get_text() and hashlib.sha256(source.read_bytes()).hexdigest() != original_hash
+                    annotations = list(page.annots() or [])
                     check["reading_highlight_styles"] = all(
                         any(a.info.get("subject") == HIGHLIGHT_STYLES[key]["label"]
                             and max(abs(c - e) for c, e in zip(a.colors["stroke"], HIGHLIGHT_STYLES[key]["color"])) < .001
                             for a in annotations)
                         for key in ("confused", "useful"))
+                    scale = 3
+                    with_marks = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False, annots=True)
+                    without_marks = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False, annots=False)
+
+                    def changed_at(x, y):
+                        px, py = int(x * scale), int(y * scale)
+                        return with_marks.pixel(px, py) != without_marks.pixel(px, py)
+
+                    flat_checks = []
+                    for annot in annotations:
+                        if annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT:
+                            continue
+                        region = fitz.Quad(annot.vertices[:4]).rect
+                        # Flat fill reaches all four inset corners, with no
+                        # curved cap bleeding beyond either text endpoint.
+                        flat_checks.extend(changed_at(x, y) for x in (region.x0 + 1, region.x1 - 1)
+                                           for y in (region.y0 + 1, region.y1 - 1))
+                        flat_checks.extend(not changed_at(x, region.y0 + region.height * fraction)
+                                           for x in (region.x0 - 1, region.x1 + 1)
+                                           for fraction in (.15, .5, .85))
+                    check["flat_highlight_ends"] = bool(flat_checks) and all(flat_checks)
                 pdf.save_in_place(styled)
                 with fitz.open(source) as reopened:
                     check["repeat_save_no_duplicates"] = sum(a.type[0] == 8 for a in reopened[0].annots() or []) == 3

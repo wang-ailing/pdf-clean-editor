@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import hashlib
 import os
+import re
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -76,19 +77,126 @@ def _overlap(first: fitz.Rect, second: fitz.Rect) -> bool:
     return not intersection.is_empty and intersection.width > 0 and intersection.height > 0
 
 
+def _pdf_number(value: float) -> str:
+    """Write an ordinary PDF number, never scientific notation."""
+    result = f"{value:.8f}".rstrip("0").rstrip(".")
+    return "0" if result in ("", "-0") else result
+
+
+def _highlight_quad_points(doc: fitz.Document, annot: fitz.Annot) -> list[tuple[float, ...]]:
+    """Read native PDF coordinates, independent of page rotation or crop box."""
+    kind, value = doc.xref_get_key(annot.xref, "QuadPoints")
+    if kind == "xref":
+        value = doc.xref_object(int(value.split()[0]), compressed=True)
+        kind = "array" if value.lstrip().startswith("[") else kind
+    if kind != "array":
+        raise PdfEngineError("高亮批注缺少有效的文字选区。")
+    # xref_get_key canonicalizes the PDF array. Check the whole representation
+    # before parsing so indirect references or non-numeric array entries cannot
+    # silently become coordinates.
+    numeric = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
+    if not re.fullmatch(r"\[\s*(?:" + numeric + r"\s*)+\]", value):
+        raise PdfEngineError("高亮批注的文字选区无效。")
+    values = [float(number) for number in re.findall(numeric, value)]
+    if len(values) % 8 or not values or not all(math.isfinite(number) for number in values):
+        raise PdfEngineError("高亮批注的文字选区无效。")
+    return [tuple(values[offset:offset + 8]) for offset in range(0, len(values), 8)]
+
+
+def _has_flat_highlight_appearance(doc: fitz.Document, annot: fitz.Annot) -> bool:
+    kind, value = doc.xref_get_key(annot.xref, "AP/N")
+    if kind != "xref":
+        return False
+    appearance = int(value.split()[0])
+    return doc.xref_get_key(appearance, "PDFCleanFlatHighlight") == ("name", "/V1")
+
+
+def _set_flat_highlight_appearance(doc: fitz.Document, annot: fitz.Annot) -> None:
+    """Retain a standard Highlight annotation with four straight quad edges.
+
+    MuPDF's normal Highlight appearance adds Bezier caps outside QuadPoints.
+    Use the annotation's actual PDF QuadPoints for a filled polygon instead.
+    Keeping PDF coordinates and an identity appearance Matrix avoids assumptions
+    about rotated/cropped pages and also retains slanted text quads exactly.
+    """
+    quads = _highlight_quad_points(doc, annot)
+    xs = [quad[index] for quad in quads for index in (0, 2, 4, 6)]
+    ys = [quad[index] for quad in quads for index in (1, 3, 5, 7)]
+    bounds = (min(xs), min(ys), max(xs), max(ys))
+    if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+        raise PdfEngineError("高亮批注的文字选区不能为空。")
+    rect = "[" + " ".join(_pdf_number(number) for number in bounds) + "]"
+    color = annot.colors.get("stroke") or (1.0, 1.0, 0.0)
+    if len(color) == 1:
+        paint = f"{_pdf_number(color[0])} g"
+    elif len(color) == 3:
+        paint = " ".join(_pdf_number(number) for number in color) + " rg"
+    elif len(color) == 4:
+        paint = " ".join(_pdf_number(number) for number in color) + " k"
+    else:
+        raise PdfEngineError("高亮批注的颜色无效。")
+    opacity = annot.opacity
+    opacity = opacity if 0 <= opacity <= 1 else 1.0
+    alpha = _pdf_number(opacity)
+    commands = ["q", "/GS0 gs", paint]
+    for quad in quads:
+        # PDF text markup QuadPoints use UL, UR, LL, LR, not perimeter order.
+        for position, point_index in enumerate((0, 2, 6, 4)):
+            commands.append(f"{_pdf_number(quad[point_index])} "
+                            f"{_pdf_number(quad[point_index + 1])} {'m' if position == 0 else 'l'}")
+        commands.append("h")
+    commands.extend(("f", "Q", ""))
+    # Each annotation owns its new Form. An old PDF can share appearance
+    # streams, so replacing a shared stream could alter an unrelated annotation.
+    appearance = doc.get_new_xref()
+    doc.update_object(appearance, (
+        "<< /Type /XObject /Subtype /Form /FormType 1 "
+        f"/BBox {rect} /Matrix [1 0 0 1 0 0] "
+        "/PDFCleanFlatHighlight /V1 "
+        "/Resources << /ExtGState << /GS0 << /Type /ExtGState "
+        f"/CA {alpha} /ca {alpha} /BM /Multiply >> >> >> >>"
+    ))
+    doc.update_stream(appearance, "\n".join(commands).encode("ascii"))
+    doc.xref_set_key(annot.xref, "AP/N", f"{appearance} 0 R")
+    doc.xref_set_key(annot.xref, "Rect", rect)
+    doc.xref_set_key(annot.xref, "BM", "/Multiply")
+
+
+def _flatten_owned_highlights(doc: fitz.Document) -> int:
+    """Upgrade this app's older highlights in memory; leave other authors alone."""
+    labels = {style["label"] for style in HIGHLIGHT_STYLES.values()} | {"黄色高亮"}
+    upgraded = 0
+    for page in doc:
+        changed = False
+        for annot in list(page.annots() or []):
+            info = annot.info
+            if (annot.type[0] != fitz.PDF_ANNOT_HIGHLIGHT
+                    or info.get("title") != "PDF 净擦"
+                    or not ({info.get("subject"), info.get("content")} & labels)
+                    or _has_flat_highlight_appearance(doc, annot)):
+                continue
+            _set_flat_highlight_appearance(doc, annot)
+            changed = True
+            upgraded += 1
+        if changed:
+            doc.reload_page(page)
+    return upgraded
+
+
 class PdfDocument:
     """An immutable session baseline with export and atomic original saving."""
 
     def __init__(self, path: str | os.PathLike[str], password: str | None = None):
         self.path = Path(path).expanduser().resolve()
         self._password = password
+        self.needs_highlight_upgrade = False
         self._source_data = self.path.read_bytes()
         self.source_size = len(self._source_data)
         self._last_disk_state = self._fingerprint(self.path)
         self._last_known_hash = self._last_disk_state["sha256"]
         if self._last_known_hash != hashlib.sha256(self._source_data).hexdigest():
             raise PdfEngineError("原 PDF 在读取期间发生了变化，请重新打开后再编辑。")
-        self.doc = self._open_snapshot()
+        self.doc = self._open_snapshot(track_highlight_upgrade=True)
         if not self.doc.is_pdf:
             self.doc.close()
             raise PdfEngineError("请选择 PDF 文件。")
@@ -130,12 +238,15 @@ class PdfDocument:
         if current != self._last_disk_state:
             raise PdfEngineError("原 PDF 已被其他程序修改或替换，已阻止覆盖。请重新打开文件，或将当前编辑另存为副本。")
 
-    def _open_snapshot(self) -> fitz.Document:
+    def _open_snapshot(self, *, track_highlight_upgrade: bool = False) -> fitz.Document:
         try:
             doc = fitz.open(stream=self._source_data, filetype="pdf")
             if doc.needs_pass and (not self._password or not doc.authenticate(self._password)):
                 doc.close()
                 raise PdfEngineError("这份 PDF 需要正确的打开密码。")
+            upgraded = _flatten_owned_highlights(doc) if doc.is_pdf else 0
+            if track_highlight_upgrade:
+                self.needs_highlight_upgrade = bool(upgraded)
             return doc
         except PdfEngineError:
             raise
@@ -327,6 +438,9 @@ class PdfDocument:
                         annot.set_colors(stroke=style["color"])
                     annot.set_info(title="PDF 净擦", subject=style["label"], content=style["label"])
                     annot.update()
+                    if quads:
+                        _set_flat_highlight_appearance(work, annot)
+                        page = work.reload_page(page)
                     stats["highlights"] += 1
             if optimize_images and created_images:
                 stats["optimized_images"] += self._compress_new_images(work, page, created_images, warnings)
@@ -453,6 +567,7 @@ class PdfDocument:
                     raise PdfEngineError("保存完成后，原 PDF 又被其他程序修改。请重新打开文件再继续编辑。")
                 self._last_disk_state = current_state
                 self._last_known_hash = current_state["sha256"]
+                self.needs_highlight_upgrade = False
             saved = source_bytes - output_bytes
             if saved <= 0:
                 explanation = "本次文件未缩小：原文件可能已经压缩充分，或高亮、擦除图片的重写增加了数据。"

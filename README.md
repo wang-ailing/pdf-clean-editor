@@ -6,7 +6,7 @@
 
 ## 下载使用
 
-从 [最新 Release](https://github.com/wang-ailing/pdf-clean-editor/releases/latest) 下载 `PDFCleanEditor-1.1.0-windows-x64.exe`，双击运行即可。支持 Windows 10 / 11 64 位，不需要安装 Python。单文件版本首次启动需要解包，请稍候。
+从 [最新 Release](https://github.com/wang-ailing/pdf-clean-editor/releases/latest) 下载 `PDFCleanEditor-1.1.1-windows-x64.exe`，双击运行即可。支持 Windows 10 / 11 64 位，不需要安装 Python。单文件版本首次启动需要解包，请稍候。
 
 所有 PDF 处理均在本机完成，不上传文件，不需要联网。
 
@@ -25,7 +25,8 @@
 
 ## 支持范围
 
-- 三种标记均按照所选文字范围添加：普通高亮为黄色，困惑为淡紫色，有用为淡绿色。
+- 三种标记均按照所选文字范围添加，边缘平直：普通高亮为黄色，困惑为淡紫色，有用为淡绿色。
+- 本工具旧版创建的圆头高亮，重新打开后会显示为平直边缘，按 Ctrl+S 保存样式；其他软件创建的批注保持原样。
 - 擦除只针对选中的文字，不采用白色矩形遮盖文字。
 - 保存后仍可在当前会话中撤销、重做，再按 Ctrl+S 保存；关闭程序后不保留撤销历史。
 - 当前文件若被其他程序修改，会阻止覆盖并提示重新打开，避免覆盖外部修改。
@@ -55,7 +56,7 @@ python app.py "example.pdf"
 .\build.ps1
 ```
 
-构建使用 PyInstaller，输出为 `dist\PDFCleanEditor-1.1.0-windows-x64.exe`。发布时应同时提供本仓库的对应版本源码、应用许可和第三方许可说明。第三方原始许可也随程序打包。
+构建使用 PyInstaller，输出为 `dist\PDFCleanEditor-1.1.1-windows-x64.exe`。发布时应同时提供本仓库的对应版本源码、应用许可和第三方许可说明。第三方原始许可也随程序打包。
 
 ## 测试
 
@@ -63,6 +64,7 @@ python app.py "example.pdf"
 python test_editor.py
 python test_selection.py
 python test_save_styles.py
+python test_flat_highlights.py
 ```
 
 测试覆盖 PDF 编辑、文字选择和保存等行为。
