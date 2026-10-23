@@ -1,0 +1,90 @@
+{
+  "PyMuPDF": {
+    "version": "1.26.7",
+    "license_files": [
+      "PyMuPDF/COPYING"
+    ]
+  },
+  "Pillow": {
+    "version": "12.3.0",
+    "license_files": [
+      "Pillow/licenses/LICENSE"
+    ]
+  },
+  "PyInstaller": {
+    "version": "6.22.3",
+    "license_files": [
+      "PyInstaller/licenses/COPYING.txt"
+    ]
+  },
+  "pyinstaller-hooks-contrib": {
+    "version": "2026.9",
+    "license_files": [
+      "pyinstaller-hooks-contrib/licenses/LICENSE"
+    ]
+  },
+  "altgraph": {
+    "version": "0.17.5",
+    "license_files": [
+      "altgraph/LICENSE"
+    ]
+  },
+  "packaging": {
+    "version": "26.3",
+    "license_files": [
+      "packaging/licenses/LICENSE",
+      "packaging/licenses/LICENSE.APACHE",
+      "packaging/licenses/LICENSE.BSD"
+    ]
+  },
+  "pefile": {
+    "version": "2024.8.26",
+    "license_files": [
+      "pefile/LICENSE"
+    ]
+  },
+  "pywin32-ctypes": {
+    "version": "0.2.3",
+    "license_files": [
+      "pywin32-ctypes/LICENSE.txt"
+    ]
+  },
+  "setuptools": {
+    "version": "84.2.1",
+    "license_files": [
+      "setuptools/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/autocommand-2.2.2.dist-info/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/backports.tarfile-1.2.0.dist-info/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/importlib_metadata-8.7.1.dist-info/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/jaraco.text-4.0.0.dist-info/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/jaraco_context-6.1.0.dist-info/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/jaraco_functools-4.4.0.dist-info/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/more_itertools-10.8.0.dist-info/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/packaging-26.3.dist-info/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+      "setuptools/package-files/setuptools/_vendor/packaging-26.3.dist-info/licenses/LICENSE.BSD",
+      "setuptools/package-files/setuptools/_vendor/platformdirs-4.4.0.dist-info/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/tomli-2.4.0.dist-info/licenses/LICENSE",
+      "setuptools/package-files/setuptools/_vendor/wheel-0.46.3.dist-info/licenses/LICENSE.txt",
+      "setuptools/package-files/setuptools/_vendor/zipp-3.23.0.dist-info/licenses/LICENSE"
+    ]
+  },
+  "Python": {
+    "version": "3.12.14",
+    "license_files": [
+      "Python-LICENSE.txt"
+    ]
+  },
+  "Tcl": {
+    "version": "8.6.12",
+    "license_files": [
+      "Tcl-license.terms"
+    ]
+  },
+  "Tk": {
+    "version": "8.6.12",
+    "license_files": [
+      "Tk-license.terms"
+    ]
+  }
+}

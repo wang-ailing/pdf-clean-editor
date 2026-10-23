@@ -1,0 +1,47 @@
+name: Test and build Windows executable
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-build.txt
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Test PDF editing and text selection
+        run: |
+          python test_editor.py
+          python test_selection.py
+          python app.py --self-test --report qa/source-self-test.json
+      - name: Build portable executable
+        shell: pwsh
+        run: ./build.ps1
+      - name: Verify bundled executable
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath ./dist/PDFCleanEditor-1.0.0-windows-x64.exe -ArgumentList '--self-test', '--report', 'qa/bundled-self-test.json' -PassThru -Wait -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Executable self-test failed" }
+          $report = Get-Content qa/bundled-self-test.json -Raw | ConvertFrom-Json
+          if (-not $report.ok -or -not $report.frozen) { throw "Executable is not a working standalone build" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PDFCleanEditor-windows-x64
+          path: |
+            dist/*.exe
+            qa/*self-test.json

@@ -1,0 +1,16 @@
+{
+  "sources": [
+    {
+      "filename": "pymupdf-1.26.7.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/48/d6/09b28f027b510838559f7748807192149c419b30cb90e6d5f0cf916dc9dc/pymupdf-1.26.7.tar.gz",
+      "bytes": 84327033,
+      "sha256": "71add8bdc8eb1aaa207c69a13400693f06ad9b927bea976f5d5ab9df0bb489c3"
+    },
+    {
+      "filename": "mupdf-1.26.12-source.tar.gz",
+      "url": "https://mupdf.com/downloads/archive/mupdf-1.26.12-source.tar.gz",
+      "bytes": 64536473,
+      "sha256": "6baf910928f404167ba49be6340195dec340795724722b331f5a2143f5aa0d01"
+    }
+  ]
+}

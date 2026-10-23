@@ -1,0 +1,23 @@
+PDFCleanEditor 1.0.0
+Copyright (c) 2026 PDFCleanEditor contributors
+
+This application is free software under the GNU Affero General Public License,
+version 3 or, at your option, any later version (AGPL-3.0-or-later).
+There is no warranty; see AGPL-3.0.txt and the application's root LICENSE.
+Application source and build scripts: https://github.com/wang-ailing/pdf-clean-editor
+
+Runtime components include:
+  PyMuPDF 1.26.7 and MuPDF 1.26.12, copyright Artifex Software and contributors.
+  Pillow 12.3.0, copyright its respective contributors (MIT-CMU and embedded notices).
+  CPython and Tcl/Tk, under their original licenses reproduced in this directory.
+  PyInstaller, under GPL with the bootloader distribution exception, and Apache-2.0.
+
+Original license texts and third-party notices are retained verbatim in this
+directory. runtime-versions.json records the versions used for this build.
+The one-line wheel PyMuPDF/COPYING is supplemented by the full original source
+COPYING in PyMuPDF-AGPL-COPYING. MuPDF-COPYING and MuPDF-thirdparty/ contain its
+original license and dependency notices; the combined notices file is provided
+for convenient reading.
+
+Matching PyMuPDF and MuPDF corresponding-source archives are distributed with
+the release. source-archives.json records upstream URLs and SHA-256 values.

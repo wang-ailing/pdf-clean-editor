@@ -1,0 +1,3 @@
+# The pinned PDF engine avoids a text-redaction spacing regression in 2.0.
+PyMuPDF==1.26.7
+Pillow==12.3.0

@@ -1,0 +1,24 @@
+# Local dependencies, build environments and generated binaries
+vendor*/
+.venv*/
+.build*/
+build/
+dist/
+__pycache__/
+*.py[cod]
+*.exe
+*.bak
+*.log
+
+# Local PDFs, test outputs and development-only notes
+*.pdf
+qa/
+release-engine-notes.md
+source-release-self-test.json
+Launcher.cs
+
+# Editor / operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
