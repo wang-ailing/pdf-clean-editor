@@ -30,6 +30,8 @@ jobs:
           python test_selection.py
           python test_save_styles.py
           python test_flat_highlights.py
+          python test_native_drop.py
+          python test_input_actions.py
           python app.py --self-test --report qa/source-self-test.json
       - name: Build portable executable
         shell: pwsh
@@ -37,7 +39,7 @@ jobs:
       - name: Verify bundled executable
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath ./dist/PDFCleanEditor-1.1.1-windows-x64.exe -ArgumentList '--self-test', '--report', 'qa/bundled-self-test.json' -PassThru -Wait -WindowStyle Hidden
+          $process = Start-Process -FilePath ./dist/PDFCleanEditor-1.2.0-windows-x64.exe -ArgumentList '--self-test', '--report', 'qa/bundled-self-test.json' -PassThru -Wait -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { throw "Executable self-test failed" }
           $report = Get-Content qa/bundled-self-test.json -Raw | ConvertFrom-Json
           if (-not $report.ok -or -not $report.frozen) { throw "Executable is not a working standalone build" }

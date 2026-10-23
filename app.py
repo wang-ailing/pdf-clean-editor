@@ -19,9 +19,10 @@ DATA_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "sh
 from PIL import Image, ImageChops, ImageDraw, ImageTk
 from pdf_engine import PdfDocument, HIGHLIGHT_STYLES
 from text_selection import TextSelector
+from native_drop import WindowsFileDrop
 
 APP_NAME = "PDF擦除与高亮"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 BG, INK, MUTED = "#eef1f5", "#263447", "#708092"
 
 
@@ -55,9 +56,11 @@ class Editor:
         self.result_queue = queue.Queue()
         self.resize_after = self.selection_after = None
         self.pending_drag_end = None
-        self.status = tk.StringVar(value="划选文字后，选择「高亮」「困惑」「有用」或「擦除」。")
+        self.status = tk.StringVar(value="拖入 PDF 打开；划选文字后可复制、高亮或擦除。")
         self._build()
         self._shortcuts()
+        self.file_drop = None
+        root.after_idle(self._enable_file_drop)
         root.report_callback_exception = lambda typ, value, tb: self._error(
             "操作失败", value, "".join(traceback.format_exception(typ, value, tb)))
         root.protocol("WM_DELETE_WINDOW", self.close)
@@ -98,6 +101,7 @@ class Editor:
         self.canvas.bind("<ButtonPress-1>", self._start_selection)
         self.canvas.bind("<B1-Motion>", self._drag_selection)
         self.canvas.bind("<ButtonRelease-1>", self._end_selection)
+        self.canvas.bind("<Button-3>", self._show_copy_menu)
         self.canvas.bind("<MouseWheel>", self._wheel)
         self.canvas.bind("<ButtonPress-2>", self._pan_start)
         self.canvas.bind("<B2-Motion>", lambda e: self.canvas.scan_dragto(e.x, e.y, gain=1))
@@ -117,6 +121,11 @@ class Editor:
         self.floating_bar = tk.Frame(self.canvas, bg="#d6dce4", padx=1, pady=1)
         bar = tk.Frame(self.floating_bar, bg="white", padx=3, pady=3)
         bar.pack()
+        self.copy_button = tk.Button(bar, text="复制", command=self.copy_selection, bg="white",
+                                     activebackground="#edf4ff", fg=INK, bd=0,
+                                     font=("Microsoft YaHei UI", 11), cursor="hand2", padx=12, pady=8)
+        self.copy_button.pack(side="left")
+        tk.Frame(bar, bg="#e3e7ed", width=1, height=22).pack(side="left", padx=3)
         self.style_icons, self.highlight_buttons = {}, {}
         for key in ("highlight", "confused", "useful"):
             style = HIGHLIGHT_STYLES[key]
@@ -134,6 +143,8 @@ class Editor:
                                      bg="white", activebackground="#f1f4f8", fg=INK, bd=0,
                                      font=("Microsoft YaHei UI", 11), cursor="hand2", padx=14, pady=8)
         self.erase_button.pack(side="left")
+        self.copy_menu = tk.Menu(self.canvas, tearoff=False, font=("Microsoft YaHei UI", 10))
+        self.copy_menu.add_command(label="复制", accelerator="Ctrl+C", command=self.copy_selection)
         self.floating_id = None
         self._update_controls()
         self._empty_canvas()
@@ -141,6 +152,7 @@ class Editor:
     def _shortcuts(self):
         for key, callback in [("<Control-o>", self.open_file), ("<Control-s>", self.save),
                               ("<Control-Shift-S>", self.save_as),
+                              ("<Control-c>", self.copy_selection),
                               ("<Control-z>", self.undo), ("<Control-y>", self.redo)]:
             self.root.bind(key, lambda event, fn=callback: (fn(), "break")[-1])
         self.root.bind("<Escape>", lambda e: self._clear_selection())
@@ -149,9 +161,50 @@ class Editor:
 
     def _empty_canvas(self):
         self.canvas.delete("all")
-        self.canvas.create_text(380, 200, text="打开 PDF，划选文字", fill=INK, font=("Microsoft YaHei UI", 21))
-        self.canvas.create_text(380, 250, text="划选后，选择「高亮 · 困惑 · 有用 · 擦除」\nCtrl+O 打开文件", fill=MUTED,
+        self.canvas.create_text(380, 200, text="拖入 PDF，划选文字", fill=INK, font=("Microsoft YaHei UI", 21))
+        self.canvas.create_text(380, 250, text="划选后可复制、高亮或擦除\n拖入文件或 Ctrl+O 打开 · Ctrl+C 复制", fill=MUTED,
                                 font=("Microsoft YaHei UI", 11), justify="center")
+
+    def _enable_file_drop(self):
+        try:
+            self.file_drop = WindowsFileDrop(self.root, self.open_dropped_files)
+        except (OSError, RuntimeError, tk.TclError):
+            self.status.set("拖拽打开暂不可用，请按 Ctrl+O 打开 PDF。")
+
+    def open_dropped_files(self, paths):
+        if self.busy:
+            return
+        if len(paths) != 1:
+            self.status.set("请一次拖入一份 PDF 文件。")
+            return
+        path = Path(paths[0])
+        if path.suffix.lower() != ".pdf" or not path.is_file():
+            self.status.set("请拖入有效的 PDF 文件。")
+            return
+        self.open_path(path)
+
+    def copy_selection(self, event=None):
+        if self.busy:
+            return "break"
+        text = (self.selection or {}).get("text", "")
+        if not text:
+            return "break"
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.status.set(f"已复制 {len(text)} 个字符。")
+        except tk.TclError as exc:
+            self.status.set(f"复制失败：{exc}")
+        return "break"
+
+    def _show_copy_menu(self, event):
+        if self.busy or not self.selection or not self.selection.get("text"):
+            return "break"
+        try:
+            self.copy_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.copy_menu.grab_release()
+        return "break"
 
     def open_file(self):
         if self.busy:
@@ -198,7 +251,7 @@ class Editor:
                 if self.pdf.needs_highlight_upgrade:
                     self.status.set("旧版高亮已显示为平直边缘；Ctrl+S 保存此样式到原文件。")
                 else:
-                    self.status.set("划选文字后选择标记；Ctrl+S 保存到原文件。")
+                    self.status.set("划选文字后可复制或标记；Ctrl+C 复制，Ctrl+S 保存。")
         except Exception as exc:
             if new_pdf and new_pdf is not self.pdf:
                 new_pdf.close()
@@ -493,6 +546,8 @@ class Editor:
         if self.busy:
             return
         if self._discard_allowed():
+            if self.file_drop:
+                self.file_drop.close()
             if self.pdf:
                 self.pdf.close()
             self.root.destroy()
@@ -508,7 +563,7 @@ def run_self_test(report_path):
     report = {"version": APP_VERSION, "frozen": bool(getattr(sys, "frozen", False)),
               "pymupdf": fitz.VersionBind, "pillow": PIL.__version__, "checks": {}, "ok": False}
     check = report["checks"]
-    root = None
+    root = drop_probe = None
     try:
         with tempfile.TemporaryDirectory(prefix="pdf-clean-selftest-") as folder:
             source, output = Path(folder) / "input.pdf", Path(folder) / "output.pdf"
@@ -604,6 +659,28 @@ def run_self_test(report_path):
             root.iconbitmap(str(ROOT / "editor.ico"))
             check["tk_runtime"] = bool(root.tk.call("info", "patchlevel"))
             check["image_runtime"] = bool(ImageTk.PhotoImage(Image.open(io.BytesIO(preview))))
+            root.update_idletasks()
+            drop_probe = WindowsFileDrop(root, lambda paths: None)
+            check["file_drop_runtime"] = drop_probe.enabled
+            drop_probe.close()
+
+            class MemoryClipboard:
+                """Check the copy action without touching the user's clipboard."""
+                text = ""
+
+                def clipboard_clear(self):
+                    self.text = ""
+
+                def clipboard_append(self, text):
+                    self.text += text
+
+            copy_probe = Editor.__new__(Editor)
+            copy_probe.root = MemoryClipboard()
+            copy_probe.busy = False
+            copy_probe.selection = {"text": "中文复制\nSelected PDF text"}
+            copy_probe.status = tk.StringVar(master=root)
+            copy_probe.copy_selection()
+            check["copy_selected_text"] = copy_probe.root.text == copy_probe.selection["text"]
             if report["frozen"]:
                 check["bundled_pdf_engine"] = Path(fitz.__file__).resolve().is_relative_to(ROOT.resolve())
                 check["bundled_pillow"] = Path(PIL.__file__).resolve().is_relative_to(ROOT.resolve())
@@ -612,6 +689,8 @@ def run_self_test(report_path):
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
+        if drop_probe:
+            drop_probe.close()
         if root:
             root.destroy()
         report_file = Path(report_path).resolve()

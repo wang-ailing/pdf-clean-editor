@@ -1,22 +1,23 @@
 # PDF 擦除与高亮
 
-一个轻量的 Windows PDF 文字编辑工具。划选文字后，在选区上方选择 **高亮**、**困惑**、**有用** 或 **擦除**，按 Ctrl+S 直接保存当前文件。
+一个轻量的 Windows PDF 文字编辑工具。将 PDF 拖入窗口打开，划选文字后选择 **复制**、**高亮**、**困惑**、**有用** 或 **擦除**，按 Ctrl+S 直接保存当前文件。
 
 擦除会实际删除选中的页面文字，并在保存时完整重写 PDF、清理废弃对象；图片和背景予以保留。文件大小取决于原始 PDF 与修改内容，**不保证每次擦除后都缩小**。
 
 ## 下载使用
 
-从 [最新 Release](https://github.com/wang-ailing/pdf-clean-editor/releases/latest) 下载 `PDFCleanEditor-1.1.1-windows-x64.exe`，双击运行即可。支持 Windows 10 / 11 64 位，不需要安装 Python。单文件版本首次启动需要解包，请稍候。
+从 [最新 Release](https://github.com/wang-ailing/pdf-clean-editor/releases/latest) 下载 `PDFCleanEditor-1.2.0-windows-x64.exe`，双击运行即可。支持 Windows 10 / 11 64 位，不需要安装 Python。单文件版本首次启动需要解包，请稍候。
 
 所有 PDF 处理均在本机完成，不上传文件，不需要联网。
 
-1. 按 **Ctrl+O** 打开 PDF，或使用左上角菜单。
-2. 按住鼠标左键划选文字，松手后选择 **高亮**（黄色）、**困惑**（淡紫）、**有用**（淡绿），或 **擦除**。
+1. 将一个 PDF 文件拖入程序窗口，或按 **Ctrl+O**、使用左上角菜单打开。
+2. 按住鼠标左键划选文字，松手后在浮栏选择 **复制**、**高亮**（黄色）、**困惑**（淡紫）、**有用**（淡绿），或 **擦除**。复制也可以按 **Ctrl+C**，或右键选择 **复制**；文字中的换行会保留。
 3. 按 **Ctrl+S** 直接保存当前 PDF，不弹出另存为对话框。需要导出另一份文件时，使用菜单中的 **另存副本**（Ctrl+Shift+S）；之后 Ctrl+S 仍保存当前原文件。
 
 | 操作 | 快捷方式 |
 | --- | --- |
 | 打开 PDF | Ctrl+O |
+| 复制所选文字 | Ctrl+C |
 | 保存当前文件 | Ctrl+S |
 | 另存副本 | Ctrl+Shift+S |
 | 撤销 / 重做 | Ctrl+Z / Ctrl+Y |
@@ -27,6 +28,8 @@
 
 - 三种标记均按照所选文字范围添加，边缘平直：普通高亮为黄色，困惑为淡紫色，有用为淡绿色。
 - 本工具旧版创建的圆头高亮，重新打开后会显示为平直边缘，按 Ctrl+S 保存样式；其他软件创建的批注保持原样。
+- 支持从 Windows 文件资源管理器拖入单个 PDF 打开；切换文件前仍会提示处理未保存的修改。
+- 复制所选文字使用 PDF 原生文字层并保留换行；支持 Ctrl+C、划选浮栏和右键菜单。
 - 擦除只针对选中的文字，不采用白色矩形遮盖文字。
 - 保存后仍可在当前会话中撤销、重做，再按 Ctrl+S 保存；关闭程序后不保留撤销历史。
 - 当前文件若被其他程序修改，会阻止覆盖并提示重新打开，避免覆盖外部修改。
@@ -56,7 +59,7 @@ python app.py "example.pdf"
 .\build.ps1
 ```
 
-构建使用 PyInstaller，输出为 `dist\PDFCleanEditor-1.1.1-windows-x64.exe`。发布时应同时提供本仓库的对应版本源码、应用许可和第三方许可说明。第三方原始许可也随程序打包。
+构建使用 PyInstaller，输出为 `dist\PDFCleanEditor-1.2.0-windows-x64.exe`。发布时应同时提供本仓库的对应版本源码、应用许可和第三方许可说明。第三方原始许可也随程序打包。
 
 ## 测试
 
@@ -65,9 +68,11 @@ python test_editor.py
 python test_selection.py
 python test_save_styles.py
 python test_flat_highlights.py
+python test_native_drop.py
+python test_input_actions.py
 ```
 
-测试覆盖 PDF 编辑、文字选择和保存等行为。
+测试覆盖 PDF 编辑、文字选择、保存、拖入文件处理和复制等行为。
 
 ## 许可
 
