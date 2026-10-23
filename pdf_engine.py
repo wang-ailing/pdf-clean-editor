@@ -1,14 +1,16 @@
-"""PDF editing backend: real content removal and yellow annotations.
+"""PDF editing backend: real text removal and reading highlight annotations.
 
 All public coordinates use the visible, rotated page (the same space as
-render_page).  Nothing is written back to the source PDF.  Export always opens
-an independent snapshot, applies the queued edits in order, then rewrites the
-whole document with unused objects removed rather than incrementally appending.
+render_page). The loaded session baseline stays immutable. Export writes a
+distinct copy; explicit save_in_place atomically replaces the source after
+checking for external changes. Both replay the queued edits on an independent
+snapshot and fully rewrite it with unused objects removed.
 """
 
 from __future__ import annotations
 
 import math
+import hashlib
 import os
 import tempfile
 from collections import Counter, defaultdict
@@ -16,6 +18,22 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import pymupdf as fitz
+
+
+HIGHLIGHT_STYLES: dict[str, dict[str, Any]] = {
+    "highlight": {
+        "label": "高亮", "color": (1.0, 1.0, 0.0), "rgb": (1.0, 1.0, 0.0),
+        "opacity": 0.38, "swatch": "#E1C900", "hover": "#FFF8BE",
+    },
+    "confused": {
+        "label": "困惑", "color": (0.64, 0.40, 0.98), "rgb": (0.64, 0.40, 0.98),
+        "opacity": 0.38, "swatch": "#A366FA", "hover": "#EFE3FF",
+    },
+    "useful": {
+        "label": "有用", "color": (0.25, 0.80, 0.45), "rgb": (0.25, 0.80, 0.45),
+        "opacity": 0.38, "swatch": "#40CC73", "hover": "#DDF8E6",
+    },
+}
 
 
 class PdfEngineError(RuntimeError):
@@ -59,13 +77,17 @@ def _overlap(first: fitz.Rect, second: fitz.Rect) -> bool:
 
 
 class PdfDocument:
-    """A read-only loaded PDF plus export helpers for the editor UI."""
+    """An immutable session baseline with export and atomic original saving."""
 
     def __init__(self, path: str | os.PathLike[str], password: str | None = None):
         self.path = Path(path).expanduser().resolve()
         self._password = password
         self._source_data = self.path.read_bytes()
         self.source_size = len(self._source_data)
+        self._last_disk_state = self._fingerprint(self.path)
+        self._last_known_hash = self._last_disk_state["sha256"]
+        if self._last_known_hash != hashlib.sha256(self._source_data).hexdigest():
+            raise PdfEngineError("原 PDF 在读取期间发生了变化，请重新打开后再编辑。")
         self.doc = self._open_snapshot()
         if not self.doc.is_pdf:
             self.doc.close()
@@ -74,6 +96,39 @@ class PdfDocument:
         if not self.page_count:
             self.doc.close()
             raise PdfEngineError("这份 PDF 没有可编辑的页面。")
+
+    @staticmethod
+    def _fingerprint(path: Path) -> dict[str, Any]:
+        """Hash file contents and identity; reject a change during the read."""
+        def signature(stat: os.stat_result) -> tuple[int, ...]:
+            # On Windows Python 3.12, stat() and fstat() can expose different
+            # legacy st_ctime meanings. Their explicit birthtime agrees.
+            creation_or_change = getattr(stat, "st_birthtime_ns", stat.st_ctime_ns)
+            return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, creation_or_change)
+
+        before = path.stat()
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if signature(before) != signature(opened):
+                raise PdfEngineError("原 PDF 在读取期间被替换，请重新打开。")
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+            after_read = os.fstat(stream.fileno())
+        after = path.stat()
+        if signature(before) != signature(after_read) or signature(before) != signature(after):
+            raise PdfEngineError("原 PDF 在读取期间发生了变化，请重新打开。")
+        return {"signature": signature(after), "sha256": digest.hexdigest(), "size": after.st_size}
+
+    def _assert_source_unchanged(self) -> None:
+        try:
+            current = self._fingerprint(self.path)
+        except FileNotFoundError as exc:
+            raise PdfEngineError("原 PDF 已被移动或删除，无法原地保存。请重新打开文件或另存副本。") from exc
+        except PermissionError as exc:
+            raise PdfEngineError("无法读取原 PDF 的当前状态，文件可能被其他程序占用。请解除占用后重试。") from exc
+        if current != self._last_disk_state:
+            raise PdfEngineError("原 PDF 已被其他程序修改或替换，已阻止覆盖。请重新打开文件，或将当前编辑另存为副本。")
 
     def _open_snapshot(self) -> fitz.Document:
         try:
@@ -200,8 +255,13 @@ class PdfDocument:
                 raise PdfEngineError("不支持的编辑操作。")
             clean_action = dict(action)
             clean_action["rect"] = tuple(_rect(action.get("rect", ())))
-            if kind == "highlight" and action.get("quads"):
-                clean_action["quads"] = [_flat_quad(_quad(q)) for q in action["quads"]]
+            if kind == "highlight":
+                style = action.get("style", "highlight")
+                if not isinstance(style, str) or style not in HIGHLIGHT_STYLES:
+                    raise PdfEngineError("不支持的高亮类别，请选择高亮、困惑或有用。")
+                clean_action["style"] = style
+                if action.get("quads"):
+                    clean_action["quads"] = [_flat_quad(_quad(q)) for q in action["quads"]]
             grouped[index].append(clean_action)
         return grouped
 
@@ -249,6 +309,10 @@ class PdfDocument:
                         created_images.update({item[0] for item in page.get_images(full=True)} - old_images)
                     stats["erased_regions"] += 1
                 else:
+                    style_key = action.get("style", "highlight")
+                    if not isinstance(style_key, str) or style_key not in HIGHLIGHT_STYLES:
+                        raise PdfEngineError("不支持的高亮类别，请选择高亮、困惑或有用。")
+                    style = HIGHLIGHT_STYLES[style_key]
                     quads = action.get("quads")
                     if quads:
                         transformed = [_quad(q) * page.derotation_matrix for q in quads]
@@ -256,12 +320,12 @@ class PdfDocument:
                     else:
                         annot = page.add_rect_annot(region)
                         annot.set_border(width=0)
-                        annot.set_colors(stroke=None, fill=(1, 1, 0))
+                        annot.set_colors(stroke=None, fill=style["color"])
                         annot.set_blendmode("Multiply")
-                    annot.set_opacity(0.38)
+                    annot.set_opacity(style["opacity"])
                     if quads:
-                        annot.set_colors(stroke=(1, 1, 0))
-                    annot.set_info(title="PDF 净擦", subject="黄色高亮")
+                        annot.set_colors(stroke=style["color"])
+                    annot.set_info(title="PDF 净擦", subject=style["label"], content=style["label"])
                     annot.update()
                     stats["highlights"] += 1
             if optimize_images and created_images:
@@ -301,14 +365,32 @@ class PdfDocument:
         smaller. In lossless mode, a small source can still grow: actual output
         size is reported rather than promising that every erasure shrinks it.
         """
+        return self._save(output_path, actions, optimize_images, in_place=False)
+
+    def save_in_place(self, actions: Iterable[dict[str, Any]],
+                      optimize_images: bool = False) -> dict[str, Any]:
+        """Atomically replace the source PDF after checking for outside changes.
+
+        The initial session bytes remain the replay baseline after saving. Thus
+        repeated saves, appended edits, undo and redo always rebuild the full
+        intended result without applying old edits twice to a previously saved
+        PDF. Only the expected on-disk fingerprint is advanced on success.
+        """
+        return self._save(self.path, actions, optimize_images, in_place=True)
+
+    def _save(self, output_path: str | os.PathLike[str], actions: Iterable[dict[str, Any]],
+              optimize_images: bool, *, in_place: bool) -> dict[str, Any]:
         destination = Path(output_path).expanduser().resolve()
-        if destination == self.path or (destination.exists() and self.path.exists()
-                                        and os.path.samefile(destination, self.path)):
+        if not in_place and (destination == self.path or (destination.exists() and self.path.exists()
+                                                        and os.path.samefile(destination, self.path))):
             raise PdfEngineError("请另存为新文件，原始 PDF 会保持不变。")
         if destination.suffix.lower() != ".pdf":
             raise PdfEngineError("导出文件需要使用 .pdf 扩展名。")
         if not destination.parent.is_dir():
             raise PdfEngineError("导出文件夹不存在。")
+        if in_place:
+            self._assert_source_unchanged()
+        source_bytes = self._last_disk_state["size"] if in_place else self.source_size
         grouped = self._normalize_actions(actions)
         count_erased = 0
         count_highlights = 0
@@ -339,8 +421,8 @@ class PdfDocument:
             work.save(temp_name, incremental=False, garbage=4, clean=True,
                       deflate=True, deflate_images=True, deflate_fonts=True,
                       use_objstms=1, compression_effort=100, encryption=fitz.PDF_ENCRYPT_KEEP)
-            # Read back the completed file before publishing it over any
-            # existing destination. Source and destination are always distinct.
+            # Validate the completed temporary file before replacing the
+            # destination, including the original path for in-place saves.
             check = fitz.open(temp_name)
             try:
                 if check.needs_pass and not check.authenticate(self._password or ""):
@@ -352,9 +434,26 @@ class PdfDocument:
             finally:
                 check.close()
             output_bytes = os.path.getsize(temp_name)
-            os.replace(temp_name, destination)
+            replacement_hash = None
+            if in_place:
+                # Recheck immediately before publishing; a second application
+                # may have saved while this full rewrite was being prepared.
+                replacement_hash = self._fingerprint(Path(temp_name))["sha256"]
+                self._assert_source_unchanged()
+            try:
+                os.replace(temp_name, destination)
+            except PermissionError as exc:
+                if in_place:
+                    raise PdfEngineError("原 PDF 可能正被其他程序占用，无法原地替换。原文件未改动，请关闭占用后重试，或另存为副本。") from exc
+                raise
             temp_name = None
-            saved = self.source_size - output_bytes
+            if in_place:
+                current_state = self._fingerprint(self.path)
+                if current_state["sha256"] != replacement_hash:
+                    raise PdfEngineError("保存完成后，原 PDF 又被其他程序修改。请重新打开文件再继续编辑。")
+                self._last_disk_state = current_state
+                self._last_known_hash = current_state["sha256"]
+            saved = source_bytes - output_bytes
             if saved <= 0:
                 explanation = "本次文件未缩小：原文件可能已经压缩充分，或高亮、擦除图片的重写增加了数据。"
                 if count_erased:
@@ -363,9 +462,9 @@ class PdfDocument:
             if optimize_images and compressed_images:
                 warnings.append(f"已对 {compressed_images} 幅擦除后生成的图片使用 JPEG 90 质量重压缩，存在轻微有损变化。")
             return {
-                "source_bytes": self.source_size,
+                "source_bytes": source_bytes,
                 "output_bytes": output_bytes,
-                "percent_saved": saved * 100.0 / self.source_size if self.source_size else 0.0,
+                "percent_saved": saved * 100.0 / source_bytes if source_bytes else 0.0,
                 "erased_regions": count_erased,
                 "highlights": count_highlights,
                 "removed_annotations": removed_annotations,
@@ -373,11 +472,12 @@ class PdfDocument:
                 "removed_crossing_vectors": removed_crossing_vectors,
                 "warnings": warnings,
                 "output_path": str(destination),
+                "in_place": in_place,
             }
         except PdfEngineError:
             raise
         except Exception as exc:
-            raise PdfEngineError(f"导出失败：{exc}") from exc
+            raise PdfEngineError(f"{'保存' if in_place else '导出'}失败：{exc}") from exc
         finally:
             work.close()
             if temp_name:
@@ -393,7 +493,10 @@ class PdfDocument:
                  if _overlap(annot.rect, region)
                  and (not text_only or annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT
                       or (annot.type[0] == fitz.PDF_ANNOT_SQUARE
-                          and annot.info.get("subject") == "黄色高亮"))]
+                          and (annot.info.get("subject") == "黄色高亮"
+                               or (annot.info.get("title") == "PDF 净擦"
+                                   and annot.info.get("subject") in
+                                   {style["label"] for style in HIGHLIGHT_STYLES.values()}))))]
         for xref in xrefs:
             annot = page.load_annot(xref)
             page.delete_annot(annot)

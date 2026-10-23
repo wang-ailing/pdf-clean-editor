@@ -17,10 +17,11 @@ if not getattr(sys, "frozen", False) and (ROOT / "vendor126").is_dir():
     sys.path.insert(0, str(ROOT / "vendor126"))
 DATA_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / ".local" / "share"))) / "PDFCleanEditor"
 from PIL import Image, ImageChops, ImageDraw, ImageTk
-from pdf_engine import PdfDocument
+from pdf_engine import PdfDocument, HIGHLIGHT_STYLES
 from text_selection import TextSelector
 
 APP_NAME = "PDF擦除与高亮"
+APP_VERSION = "1.1.0"
 BG, INK, MUTED = "#eef1f5", "#263447", "#708092"
 
 
@@ -54,7 +55,7 @@ class Editor:
         self.result_queue = queue.Queue()
         self.resize_after = self.selection_after = None
         self.pending_drag_end = None
-        self.status = tk.StringVar(value="划选文字后，点击选区上方的「高亮」或「擦除」。")
+        self.status = tk.StringVar(value="划选文字后，选择「高亮」「困惑」「有用」或「擦除」。")
         self._build()
         self._shortcuts()
         root.report_callback_exception = lambda typ, value, tb: self._error(
@@ -75,7 +76,8 @@ class Editor:
                                          font=("Segoe UI", 15), cursor="hand2", padx=15)
         self.file_menu = tk.Menu(self.menu_button, tearoff=False, font=("Microsoft YaHei UI", 10))
         self.file_menu.add_command(label="打开 PDF…", accelerator="Ctrl+O", command=self.open_file)
-        self.file_menu.add_command(label="保存副本…", accelerator="Ctrl+S", command=self.save)
+        self.file_menu.add_command(label="保存", accelerator="Ctrl+S", command=self.save)
+        self.file_menu.add_command(label="另存副本…", accelerator="Ctrl+Shift+S", command=self.save_as)
         self.file_menu.add_separator()
         self.file_menu.add_command(label="退出", command=self.close)
         self.menu_button.configure(menu=self.file_menu)
@@ -115,10 +117,18 @@ class Editor:
         self.floating_bar = tk.Frame(self.canvas, bg="#d6dce4", padx=1, pady=1)
         bar = tk.Frame(self.floating_bar, bg="white", padx=3, pady=3)
         bar.pack()
-        self.highlight_button = tk.Button(bar, text="▰  高亮", command=lambda: self.apply_selection("highlight"),
-                                         bg="white", activebackground="#fff3b0", fg=INK, bd=0,
-                                         font=("Microsoft YaHei UI", 11), cursor="hand2", padx=14, pady=8)
-        self.highlight_button.pack(side="left")
+        self.style_icons, self.highlight_buttons = {}, {}
+        for key in ("highlight", "confused", "useful"):
+            style = HIGHLIGHT_STYLES[key]
+            icon = Image.new("RGBA", (16, 16))
+            ImageDraw.Draw(icon).rounded_rectangle((1, 4, 15, 13), radius=3, fill=style["swatch"])
+            self.style_icons[key] = ImageTk.PhotoImage(icon)
+            button = tk.Button(bar, text=" " + style["label"], image=self.style_icons[key], compound="left",
+                               command=lambda s=key: self.apply_selection(s), bg="white", activebackground=style["hover"],
+                               fg=INK, bd=0, font=("Microsoft YaHei UI", 11), cursor="hand2", padx=12, pady=8)
+            button.pack(side="left")
+            self.highlight_buttons[key] = button
+        self.highlight_button = self.highlight_buttons["highlight"]
         tk.Frame(bar, bg="#e3e7ed", width=1, height=22).pack(side="left", padx=3)
         self.erase_button = tk.Button(bar, text="◇  擦除", command=lambda: self.apply_selection("erase"),
                                      bg="white", activebackground="#f1f4f8", fg=INK, bd=0,
@@ -130,6 +140,7 @@ class Editor:
 
     def _shortcuts(self):
         for key, callback in [("<Control-o>", self.open_file), ("<Control-s>", self.save),
+                              ("<Control-Shift-S>", self.save_as),
                               ("<Control-z>", self.undo), ("<Control-y>", self.redo)]:
             self.root.bind(key, lambda event, fn=callback: (fn(), "break")[-1])
         self.root.bind("<Escape>", lambda e: self._clear_selection())
@@ -139,7 +150,7 @@ class Editor:
     def _empty_canvas(self):
         self.canvas.delete("all")
         self.canvas.create_text(380, 200, text="打开 PDF，划选文字", fill=INK, font=("Microsoft YaHei UI", 21))
-        self.canvas.create_text(380, 250, text="划选后，上方只出现「高亮 · 擦除」\nCtrl+O 打开文件", fill=MUTED,
+        self.canvas.create_text(380, 250, text="划选后，选择「高亮 · 困惑 · 有用 · 擦除」\nCtrl+O 打开文件", fill=MUTED,
                                 font=("Microsoft YaHei UI", 11), justify="center")
 
     def open_file(self):
@@ -155,7 +166,7 @@ class Editor:
 
     def _discard_allowed(self):
         if self._token() != self.saved_token:
-            return messagebox.askyesno("还有未保存的修改", "这些修改还没有保存到副本。要放弃修改吗？", parent=self.root)
+            return messagebox.askyesno("还有未保存的修改", "这些修改还没有保存。要放弃修改吗？", parent=self.root)
         return True
 
     def open_path(self, path):
@@ -184,7 +195,7 @@ class Editor:
             self.fit = True
             self.render()
             if self.selector is not None and self.selector.has_text:
-                self.status.set("划选文字，松手后点击「高亮」或「擦除」。")
+                self.status.set("划选文字后选择标记；Ctrl+S 保存到原文件。")
         except Exception as exc:
             if new_pdf and new_pdf is not self.pdf:
                 new_pdf.close()
@@ -335,17 +346,20 @@ class Editor:
         if self.busy or not self.selection:
             return
         chosen = self.selection
-        if kind == "highlight":
-            batch = [{"kind": "highlight", "page": self.page, "rect": chosen["bounds"], "quads": chosen["quads"]}]
-        else:
+        if kind in HIGHLIGHT_STYLES:
+            batch = [{"kind": "highlight", "style": kind, "page": self.page, "rect": chosen["bounds"], "quads": chosen["quads"]}]
+        elif kind == "erase":
             batch = [{"kind": "erase", "page": self.page, "rect": rect, "text_only": True} for rect in chosen["rects"]]
+        else:
+            return
         if not batch:
             return
         self.actions.extend(batch)
         self.undo_stack.append(batch)
         self.redo_stack.clear()
         self.render()
-        self.status.set("已高亮 · Ctrl+Z 撤销，Ctrl+S 保存。" if kind == "highlight" else "已擦除 · Ctrl+Z 撤销，Ctrl+S 保存。")
+        label = HIGHLIGHT_STYLES[kind]["label"] if kind in HIGHLIGHT_STYLES else "擦除"
+        self.status.set(f"已{label} · Ctrl+Z 撤销，Ctrl+S 保存。")
 
     def undo(self):
         if self.busy or not self.undo_stack:
@@ -370,6 +384,7 @@ class Editor:
     def _update_controls(self):
         self.file_menu.entryconfigure(0, state="disabled" if self.busy else "normal")
         self.file_menu.entryconfigure(1, state="normal" if self.pdf and not self.busy else "disabled")
+        self.file_menu.entryconfigure(2, state="normal" if self.pdf and not self.busy else "disabled")
         self.prev_button.configure(state="normal" if self.pdf and self.page > 0 and not self.busy else "disabled")
         self.next_button.configure(state="normal" if self.pdf and self.page < self.pdf.page_count - 1 and not self.busy else "disabled")
         self.page_label.configure(text=f"{self.page + 1} / {self.pdf.page_count}" if self.pdf else "—")
@@ -407,14 +422,26 @@ class Editor:
         if not self.pdf or self.busy:
             return
         self._clear_selection()
+        if self._token() == self.saved_token:
+            self.status.set("所有修改均已保存。")
+            return
+        self._start_save(self.pdf.path, in_place=True)
+
+    def save_as(self):
+        if not self.pdf or self.busy:
+            return
+        self._clear_selection()
         source = Path(self.pdf.path)
-        output = filedialog.asksaveasfilename(title="保存副本", initialdir=str(source.parent), initialfile=source.stem + "-已编辑.pdf",
+        output = filedialog.asksaveasfilename(title="另存为", initialdir=str(source.parent), initialfile=source.stem + "-已编辑.pdf",
                                              defaultextension=".pdf", filetypes=[("PDF 文档", "*.pdf")])
         if not output:
             return
         if os.path.normcase(os.path.realpath(output)) == os.path.normcase(os.path.realpath(source)):
-            messagebox.showinfo(APP_NAME, "请选择一个新的文件名，以便保留原文件。", parent=self.root)
+            self.save()
             return
+        self._start_save(output, in_place=False)
+
+    def _start_save(self, output, in_place):
         self.busy = True
         self._update_controls()
         self.status.set("正在保存……")
@@ -423,8 +450,8 @@ class Editor:
 
         def work():
             try:
-                report = pdf.export(output, actions, optimize_images=False)
-                self.result_queue.put(("saved", output, report, token))
+                report = pdf.save_in_place(actions, optimize_images=False) if in_place else pdf.export(output, actions, optimize_images=False)
+                self.result_queue.put(("saved", output, report, token, in_place))
             except Exception as exc:
                 self.result_queue.put(("error", "保存失败", str(exc), traceback.format_exc()))
 
@@ -441,10 +468,12 @@ class Editor:
             if result[0] == "error":
                 self._error(result[1], RuntimeError(result[2]), result[3])
             else:
-                _, path, report, token = result
-                self.saved_token = token
+                _, path, report, token, in_place = result
+                if in_place:
+                    self.saved_token = token
                 before, after = report["source_bytes"], report["output_bytes"]
-                self.status.set(f"已保存：{Path(path).name} · {size_text(before)} → {size_text(after)}")
+                label = "已保存" if in_place else "已另存副本"
+                self.status.set(f"{label}：{Path(path).name} · {size_text(before)} → {size_text(after)}")
         self.root.after(120, self._poll)
 
     def _error(self, title, error, detail=None):
@@ -473,7 +502,7 @@ def run_self_test(report_path):
     import pymupdf as fitz
     import PIL
 
-    report = {"version": "1.0.0", "frozen": bool(getattr(sys, "frozen", False)),
+    report = {"version": APP_VERSION, "frozen": bool(getattr(sys, "frozen", False)),
               "pymupdf": fitz.VersionBind, "pillow": PIL.__version__, "checks": {}, "ok": False}
     check = report["checks"]
     root = None
@@ -519,7 +548,31 @@ def run_self_test(report_path):
                 # PDF serialization can change antialiasing/color rounding by
                 # 1-2 intensity levels; text positions are checked separately.
                 check["preview_matches_output"] = max_delta <= 2 and mean_delta <= .01
-            check["original_unchanged"] = hashlib.sha256(source.read_bytes()).hexdigest() == original_hash
+            check["export_preserves_original"] = hashlib.sha256(source.read_bytes()).hexdigest() == original_hash
+            with PdfDocument(source) as pdf:
+                styled = list(actions)
+                for needle, style in (("this", "confused"), ("sentence.", "useful")):
+                    region = pdf.doc[0].search_for(needle)[0]
+                    styled.append({"kind": "highlight", "style": style, "page": 0,
+                                   "rect": list(region), "quads": pdf.text_quads(0, region)})
+                pdf.save_in_place(styled)
+                with fitz.open(source) as reopened:
+                    check["in_place_save"] = "secret" not in reopened[0].get_text() and hashlib.sha256(source.read_bytes()).hexdigest() != original_hash
+                    annotations = list(reopened[0].annots() or [])
+                    check["reading_highlight_styles"] = all(
+                        any(a.info.get("subject") == HIGHLIGHT_STYLES[key]["label"]
+                            and max(abs(c - e) for c, e in zip(a.colors["stroke"], HIGHLIGHT_STYLES[key]["color"])) < .001
+                            for a in annotations)
+                        for key in ("confused", "useful"))
+                pdf.save_in_place(styled)
+                with fitz.open(source) as reopened:
+                    check["repeat_save_no_duplicates"] = sum(a.type[0] == 8 for a in reopened[0].annots() or []) == 3
+                pdf.save_in_place(styled[:-1])
+                with fitz.open(source) as reopened:
+                    undone = sum(a.type[0] == 8 for a in reopened[0].annots() or []) == 2
+                pdf.save_in_place(styled)
+                with fitz.open(source) as reopened:
+                    check["undo_redo_after_save"] = undone and sum(a.type[0] == 8 for a in reopened[0].annots() or []) == 3
             check["pinned_pdf_engine"] = fitz.VersionBind == "1.26.7"
             root = tk.Tk()
             root.withdraw()

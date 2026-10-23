@@ -38,7 +38,7 @@ try {
     Assert-ExitCode 'Building the portable Windows executable'
     & $editorPython -I scripts/write_build_manifest.py
     Assert-ExitCode 'Writing the build manifest'
-    $editorExe = Join-Path $editorRoot 'dist\PDFCleanEditor-1.0.0-windows-x64.exe'
+    $editorExe = Join-Path $editorRoot 'dist\PDFCleanEditor-1.1.0-windows-x64.exe'
     Write-Output $editorExe
     if ($SelfTest) {
         & (Join-Path $editorRoot 'scripts\smoke_portable.ps1') -Executable $editorExe
